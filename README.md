@@ -9,23 +9,62 @@ Client Library for [Meteor.js](https://www.meteor.com/)' [DDP protocol](https://
 [mit-url]: https://github.com/mhutter/ddp-rs/blob/main/LICENSE
 
 
-### What
+```rust
+use env_logger::Env;
+use log::{error, info};
+use serde_json::json;
 
-Communicate with servers that implement the DDP protocol
+#[tokio::main]
+async fn main() {
+    // enable log output. WARNING: `trace` will log all your messages in plain text, including any
+    // secrets
+    env_logger::init_from_env(Env::default().default_filter_or("ddp=trace"));
 
-### Why
+    let conn = ddp::connect("wss://open.rocket.chat/websocket")
+        .await
+        .unwrap_or_else(|err| {
+            error!("Failed to establish connection: {err}");
+            std::process::exit(1);
+        });
 
-Mostly to talk to [Rocket.Chat](https://www.rocket.chat/) instances via their [Realtime API](https://developer.rocket.chat/reference/api/realtime-api).
+    let res = conn
+        .call(
+            "login",
+            Some(json!([{ "resume": "your-personal-access-token" }])),
+        )
+        .await
+        .unwrap_or_else(|err| {
+            error!("Failed to log in: {err}");
+            std::process::exit(1);
+        });
+
+    info!("Login response: {res:?}");
+}
+```
+
+## Features
+
+In order to support TLS connections, one of the following features must be enabled:
+
+* `native-tls`
+* `native-tls-vendored`
+* `rustls-tls-native-roots`
+* `rustls-tls-webpki-roots`
+
+This will in turn enable the respective feature in the underlying [tungstenite](https://github.com/snapview/tungstenite-rs) crate.
 
 
 ## Project status
 
 This project is mostly driven by my own needs, so naturally things I need were implemented first.
 
-- [x] Connect to servers
-- [x] RPC features
-- [ ] Tests
+- [x] Server/Client handshake/connection establishment
+- [x] Ping/Pong
+- [x] RPC implementation
+- [x] Random ID generation
+- [x] Logging via `log` crate
 - [ ] Documentation
+- [ ] Tests
 - [ ] Communicate errors while serializing/deserializing messages back to the caller
 - [ ] Reconnect on connection loss
 - [ ] Data features (PubSub)
@@ -33,4 +72,4 @@ This project is mostly driven by my own needs, so naturally things I need were i
 
 ## License
 
-[MIT](LICENSE)
+This project is licensed unter the [MIT license](LICENSE).

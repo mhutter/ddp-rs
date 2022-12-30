@@ -13,15 +13,16 @@ pub enum ConnectResponse {
 
 /// A message that is sent from the server to the client
 ///
-/// Heartbeat messages can go either way so they show up here and in [InMessage].
+/// Heartbeat messages can go either way so they show up here and in [OutMessage].
 ///
 /// [Upstream documentation](https://github.com/meteor/meteor/blob/master/packages/ddp/DDP.md)
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "msg")]
 pub enum InMessage {
-    // Establishing a DDP Connection
+    /// A DDP connection has been established
     #[serde(rename = "connected")]
     Connected { session: String },
+    /// Establishing a DDP connection failed (because of version mismatch)
     #[serde(rename = "failed")]
     Failed { version: String },
 

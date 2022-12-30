@@ -13,7 +13,11 @@ categories = ["asynchronous", "network-programming", "web-programming::websocket
 
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+native-tls = ["tokio-tungstenite/native-tls"]
+native-tls-vendored = ["tokio-tungstenite/native-tls-vendored"]
+rustls-tls-native-roots = ["tokio-tungstenite/rustls-tls-native-roots"]
+rustls-tls-webpki-roots = ["tokio-tungstenite/rustls-tls-webpki-roots"]
 
 [dependencies]
 futures-util = { version = "0.3.25", default-features = false, features = ["sink"] }
@@ -24,3 +28,6 @@ thiserror = "1.0.38"
 tokio = { version = "1.23.0", features = ["macros", "rt", "sync"] }
 tokio-tungstenite = "0.18.0"
 uuid = { version = "1.2.2", default-features = false, features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1.23.0", default-features = false, features = ["rt-multi-thread"] }

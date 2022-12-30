@@ -1,4 +1,81 @@
-//! This module implements a client to talk to a remote via the [DDP protocol](https://github.com/meteor/meteor/blob/master/packages/ddp/DDP.md)
+//! DDP client library via WebSockets.
+//!
+//! This library implements [Meteor](https://www.meteor.com/)'s [DDP protocol](https://github.com/meteor/meteor/blob/master/packages/ddp/DDP.md).
+//!
+//! # Getting started
+//!
+//! To get started, just add this library to your dependencies:
+//!
+//! ```sh
+//! cargo add ddp
+//! ```
+//!
+//! If you plan to (and I hope you do) connect via TLS (`wss://...`), also enable one of the
+//! following features. They will in turn enable TLS support in the underlying
+//! [tungstenite](https://https://github.com/snapview/tungstenite-rs) crate.
+//!
+//! * `native-tls`
+//! * `native-tls-vendored`
+//! * `rustls-tls-native-roots`
+//! * `rustls-tls-webpki-roots`
+//!
+//! You probably also want to add either `serde` or `serde_json` to provide parameters for remote
+//! procedure calls (see the example below).
+//!
+//! Once you added `ddp` to your dependencies, use [connect] to establish both the underlying
+//! WebSocket connection and the DDP connection on top:
+//!
+//! ```no_run
+//! # async {
+//! let conn = ddp::connect("wss://example.com/websocket").await.unwrap();
+//! # };
+//! ```
+//!
+//! ## Remote Procedure Calls
+//!
+//! Once the connection is established, use [`Connection::call`] to execute remote procedure calls
+//! and wait for the response.
+//!
+//! The params can be any [`serde_json::Value`], so you could use its `json!()` macro to construct
+//! them:
+//!
+//! ```no_run
+//! use serde_json::json;
+//!
+//! // ...
+//!
+//! # async {
+//! # let conn = ddp::connect("wss://example.com/websocket").await.unwrap();
+//! conn.call("some-method", Some(json!({ "some-param": 42 }))).await.unwrap();
+//! # };
+//! ```
+//!
+//! ## Logging/Debugging
+//!
+//! This library makes use of the [`log`](https://lib.rs/crates/log) facade. You can use a library
+//! like [`env_logger`](https://lib.rs/crates/env_logger) to log to the console.
+//!
+//! **Warning** on the highest logging level (`trace`), all messages will be logged in plain text!
+//! This includes any sensitive information such as passwords, tokens, etc.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use serde_json::json;
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!     let conn = ddp::connect("wss://example.com/websocket").await.unwrap();
+//!     let res = conn.call("some-method", Some(json!({ "id": 42 }))).await.unwrap();
+//!     println!("Response to some-method: {res:?}");
+//!
+//!     // implement all your magic here!
+//!
+//!     // block as long as there is still a connection established. As soon as any of the worker
+//!     // tasks exits, `run` will return.
+//!     conn.run().await
+//! }
+//! ```
 
 // TODO: missing_docs
 #![deny(
@@ -41,9 +118,10 @@ mod worker;
 type Websocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 pub type Callback = oneshot::Sender<MessageResult>;
 
+/// The DDP protocol version used by the client
 pub const PROTOCOL_VERSION: &str = "1";
 
-/// DDP Client
+/// A DDP connection
 pub struct Connection {
     // communication channels
     sink: Sender<String>,
@@ -66,9 +144,14 @@ impl std::fmt::Debug for Connection {
     }
 }
 
+/// Establish a WebSocket connection to `url`, and then a DDP connection.
+pub async fn connect(url: &str) -> Result<Connection, Error> {
+    let (ws, _) = tokio_tungstenite::connect_async(url).await?;
+    Connection::new(ws).await
+}
+
 impl Connection {
     /// Establish a DDP connection via the given WebSocket connection
-    /// TODO: move this to `ddp::connect`
     pub async fn new(ws: Websocket) -> Result<Self, Error> {
         // split websocket into read & write parts
         let (ws_sink, ws_stream) = ws.split();
@@ -114,6 +197,8 @@ impl Connection {
     }
 
     /// Execute a remote procedure call, and return the result.
+    ///
+    /// TODO: convert params to not be an `Option`; serde_json::Value has a `Null` variant
     pub async fn call(
         &self,
         method: impl ToString,
