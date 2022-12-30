@@ -1,0 +1,26 @@
+[package]
+name = "ddp"
+version = "0.1.0"
+authors = ["Manuel Hutter (https://github.com/mhutter)"]
+repository = "https://github.com/mhutter/ddp-rs.git"
+homepage = "https://github.com/mhutter/ddp-rs"
+# TODO: documentation = "https://docs.rs/..."
+license = "MIT"
+readme = "README.md"
+description = "DDP client implementation"
+keywords = ["ddp", "meteor-js", "rocketchat"]
+categories = ["asynchronous", "network-programming", "web-programming::websocket"]
+
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+futures-util = { version = "0.3.25", default-features = false, features = ["sink"] }
+log = "0.4.17"
+serde = { version = "1.0.152", features = ["derive"] }
+serde_json = "1.0.91"
+thiserror = "1.0.38"
+tokio = { version = "1.23.0", features = ["macros", "rt", "sync"] }
+tokio-tungstenite = "0.18.0"
+uuid = { version = "1.2.2", default-features = false, features = ["v4"] }
