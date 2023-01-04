@@ -3,12 +3,11 @@ name = "ddp"
 version = "0.1.0"
 authors = ["Manuel Hutter (https://github.com/mhutter)"]
 repository = "https://github.com/mhutter/ddp-rs.git"
-homepage = "https://github.com/mhutter/ddp-rs"
-# TODO: documentation = "https://docs.rs/..."
+documentation = "https://docs.rs/ddp"
 license = "MIT"
 readme = "README.md"
 description = "DDP client implementation"
-keywords = ["ddp", "meteor-js", "rocketchat"]
+keywords = ["ddp", "meteor", "rocketchat"]
 categories = ["asynchronous", "network-programming", "web-programming::websocket"]
 
 edition = "2021"

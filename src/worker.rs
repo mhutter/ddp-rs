@@ -9,15 +9,16 @@ use futures_util::{
 };
 use log::{error, info, trace, warn};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{
-    mpsc::{Receiver, Sender},
-    oneshot,
-};
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_tungstenite::tungstenite;
 
-use super::{InMessage, MessageResult, Websocket};
+use crate::{
+    message::{Message, Ping, RpcResult},
+    Callback, Websocket,
+};
 
-type Callbacks = Arc<Mutex<HashMap<String, oneshot::Sender<MessageResult>>>>;
+// Helper type aliases
+type Callbacks = Arc<Mutex<HashMap<String, Callback>>>;
 
 /// Worker task that reads messages from a queue and writes them to the websocket
 pub async fn sender(
@@ -72,38 +73,34 @@ pub async fn handler(
     callbacks: Callbacks,
 ) {
     while let Some(msg) = message_stream.recv().await {
-        let Ok(message) = serde_json::from_str::<InMessage>(&msg) else {
+        let Ok(message) = serde_json::from_str::<Message>(&msg) else {
             warn!("Unimplemented DDP message: {msg}");
             continue;
         };
 
         match message {
-            InMessage::Ping { id } => handle_ping(&message_sink, id).await,
-            InMessage::Pong { .. } => {} // ¯\_(ツ)_/¯
-            InMessage::Result(res) => handle_result(callbacks.clone(), res).await,
+            Message::Ping(ping) => handle_ping(&message_sink, ping).await,
+            Message::Pong(_) => {}
+            Message::Result(result) => handle_result(callbacks.clone(), result).await,
             _ => warn!("Unhandled DDP message: {message:?}"),
         }
     }
 }
 
-async fn handle_ping(sink: &Sender<String>, id: Option<String>) {
-    sink.send(serde_json::to_string(&InMessage::Pong { id }).expect("serialize pong"))
+async fn handle_ping(sink: &Sender<String>, ping: Ping) {
+    let pong = Message::pong(ping.id);
+    sink.send(serde_json::to_string(&pong).expect("serialize pong"))
         .await
         .unwrap_or_else(|err| error!("Failed sending pong: {err}"));
 }
 
-async fn handle_result(callbacks: Callbacks, result: MessageResult) {
-    let id = match &result {
-        MessageResult::Result { id, .. } => id,
-        MessageResult::Error { id, .. } => id,
-    };
-
+async fn handle_result(callbacks: Callbacks, result: RpcResult) {
     let cb = {
         // grab the cb in a block to minimize Mutex lock time on callbacks
         callbacks
             .lock()
             .expect("obtain lock on callbacks")
-            .remove(id)
+            .remove(&result.id)
             .expect("find callback")
     };
 

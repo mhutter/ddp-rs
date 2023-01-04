@@ -22,22 +22,24 @@
 //! You probably also want to add either `serde` or `serde_json` to provide parameters for remote
 //! procedure calls (see the example below).
 //!
-//! Once you added `ddp` to your dependencies, use [connect] to establish both the underlying
-//! WebSocket connection and the DDP connection on top:
+//! Once you added `ddp` to your dependencies, use [`connect`] to establish both the underlying
+//! WebSocket connection and the DDP session on top (use [`Session::new`] if you already have a
+//! Tungstenite websocket).
 //!
 //! ```no_run
 //! # async {
-//! let conn = ddp::connect("wss://example.com/websocket").await.unwrap();
+//! let conn = ddp::connect("wss://example.com/websocket").await?;
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! # };
 //! ```
 //!
 //! ## Remote Procedure Calls
 //!
-//! Once the connection is established, use [`Connection::call`] to execute remote procedure calls
+//! Once the connection is established, use [`Session::call`] to execute remote procedure calls
 //! and wait for the response.
 //!
-//! The params can be any [`serde_json::Value`], so you could use its `json!()` macro to construct
-//! them:
+//! The params can be anything that implements [`serde::Serialize`], so you could use the
+//! [`serde_json::json!()`] macro to construct ad-hoc params:
 //!
 //! ```no_run
 //! use serde_json::json;
@@ -45,8 +47,9 @@
 //! // ...
 //!
 //! # async {
-//! # let conn = ddp::connect("wss://example.com/websocket").await.unwrap();
-//! conn.call("some-method", Some(json!({ "some-param": 42 }))).await.unwrap();
+//! # let conn = ddp::connect("wss://example.com/websocket").await?;
+//! conn.call("some-method", json!({ "some-param": 42 })).await?;
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! # };
 //! ```
 //!
@@ -64,23 +67,25 @@
 //! use serde_json::json;
 //!
 //! #[tokio::main]
-//! async fn main() {
-//!     let conn = ddp::connect("wss://example.com/websocket").await.unwrap();
-//!     let res = conn.call("some-method", Some(json!({ "id": 42 }))).await.unwrap();
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let conn = ddp::connect("wss://example.com/websocket").await?;
+//!     let res = conn.call("some-method", json!({ "id": 42 })).await?;
 //!     println!("Response to some-method: {res:?}");
 //!
 //!     // implement all your magic here!
 //!
 //!     // block as long as there is still a connection established. As soon as any of the worker
-//!     // tasks exits, `run` will return.
-//!     conn.run().await
+//!     // tasks exits, `select` will return.
+//!     conn.select().await;
+//!
+//!     Ok(())
 //! }
 //! ```
 
-// TODO: missing_docs
 #![deny(
-    missing_debug_implementations,
     missing_copy_implementations,
+    missing_debug_implementations,
+    missing_docs,
     trivial_casts,
     trivial_numeric_casts,
     unsafe_code,
@@ -96,38 +101,38 @@ use std::{
 
 use futures_util::StreamExt;
 use log::{error, info};
+use message::{Connected, Failed, Message, RpcError, RpcResult};
+use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 use tokio::{
     net::TcpStream,
     sync::{
-        mpsc::{self, Sender},
+        mpsc::{self, Receiver, Sender},
         oneshot,
     },
     task::JoinHandle,
 };
-
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-
-pub use types::*;
 use uuid::Uuid;
 
-mod types;
+pub mod message;
 mod worker;
 
+// Helper type aliases
 type Websocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-pub type Callback = oneshot::Sender<MessageResult>;
+type Callback = oneshot::Sender<RpcResult>;
 
 /// The DDP protocol version used by the client
 pub const PROTOCOL_VERSION: &str = "1";
 
 /// A DDP connection
-pub struct Connection {
+pub struct Session {
     // communication channels
     sink: Sender<String>,
 
     // stuff
-    session: String,
+    id: String,
     callbacks: Arc<Mutex<HashMap<String, Callback>>>,
 
     // JoinHandles
@@ -136,21 +141,19 @@ pub struct Connection {
     handler: JoinHandle<()>,
 }
 
-impl std::fmt::Debug for Connection {
+impl std::fmt::Debug for Session {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Ddp")
-            .field("session", &self.session)
-            .finish()
+        f.debug_struct("Ddp").field("session", &self.id).finish()
     }
 }
 
 /// Establish a WebSocket connection to `url`, and then a DDP connection.
-pub async fn connect(url: &str) -> Result<Connection, Error> {
+pub async fn connect(url: &str) -> Result<Session, Error> {
     let (ws, _) = tokio_tungstenite::connect_async(url).await?;
-    Connection::new(ws).await
+    Session::new(ws).await
 }
 
-impl Connection {
+impl Session {
     /// Establish a DDP connection via the given WebSocket connection
     pub async fn new(ws: Websocket) -> Result<Self, Error> {
         // split websocket into read & write parts
@@ -167,16 +170,10 @@ impl Connection {
         let receiver = tokio::spawn(async move { worker::receiver(ws_stream, in_sink).await });
 
         // establish DDP connection
-        let conn = serde_json::to_string(&OutMessage::connect(PROTOCOL_VERSION, None))?;
+        let conn = serde_json::to_string(&Message::connect(PROTOCOL_VERSION, None))?;
         sink.send(conn).await?;
 
-        let msg = stream.recv().await.expect("response");
-        let res = serde_json::from_str::<InMessage>(&msg)?;
-        let session = match res {
-            InMessage::Connected { session } => Ok(session),
-            InMessage::Failed { version } => Err(Error::IncompatibleVersion(version)),
-            _ => Err(Error::InvalidConnectMessage(res)),
-        }?;
+        let session = await_connect_response(&mut stream).await?;
 
         // Set up handling of messages
         let callbacks = Arc::new(Mutex::new(HashMap::new()));
@@ -188,7 +185,7 @@ impl Connection {
 
         Ok(Self {
             sink,
-            session,
+            id: session,
             callbacks,
             sender,
             receiver,
@@ -198,26 +195,47 @@ impl Connection {
 
     /// Execute a remote procedure call, and return the result.
     ///
-    /// TODO: convert params to not be an `Option`; serde_json::Value has a `Null` variant
-    pub async fn call(
+    /// # Arguments
+    ///
+    /// * `method` - the RPC method to be called
+    /// * `params` - parameters to the method to be called
+    ///
+    /// # Return values
+    ///
+    /// This method returns a nested `Result`:
+    ///
+    /// * The OUTER `Result` describes whether or not the message could be serialized and sent to
+    /// the server, and the response could be retreived and deserialized. Its error variants come
+    /// from Tungstenite, Tokio and Serde.
+    /// * The INNER `Result` describes the **outcome of the call** on the server.
+    ///
+    /// If the method you're calling does not accept any parameters, just use `Value::Null` as
+    /// `params`.
+    ///
+    /// # Errors
+    ///
+    /// TODO: document or simplify
+    pub async fn call<P: Serialize>(
         &self,
-        method: impl ToString,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, Error> {
+        method: &str,
+        params: P,
+    ) -> Result<Result<Value, RpcError>, Error> {
         let id = Uuid::new_v4();
-        let message = OutMessage::method(method, id, params);
+        let message = Message::method(method, id.to_string(), params)?;
         let cb = self.register_callback(id);
 
         self.sink.send(serde_json::to_string(&message)?).await?;
 
-        match cb.await? {
-            MessageResult::Result { result, .. } => Ok(result),
-            MessageResult::Error { error, .. } => Err(Error::Call(error)),
+        let result = cb.await?;
+        if let Some(err) = result.error {
+            Ok(Err(err))
+        } else {
+            Ok(Ok(result.result.unwrap_or_default()))
         }
     }
 
-    /// Block on the worker threads spawned by the client
-    pub async fn run(self) {
+    /// Block on the worker threads spawned by the client, until the first one returns.
+    pub async fn select(self) {
         tokio::select! {
             _ = self.sender => info!("Sender exited"),
             _ = self.receiver => info!("Receiver exited"),
@@ -225,7 +243,7 @@ impl Connection {
         }
     }
 
-    fn register_callback(&self, id: impl ToString) -> oneshot::Receiver<MessageResult> {
+    fn register_callback(&self, id: impl ToString) -> oneshot::Receiver<RpcResult> {
         let (tx, rx) = oneshot::channel();
         self.callbacks
             .lock()
@@ -236,24 +254,57 @@ impl Connection {
     }
 }
 
+/// Possible errors that might occur when using this library
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Connection establishmet with the server failed due to a protocol version mismatch
+    ///
+    /// See [message::Failed].
     #[error("Server version incompatible, we offered {PROTOCOL_VERSION}, it offered {0}")]
     IncompatibleVersion(String),
+    /// The server responded with something else than a `connected` or `failed` message during
+    /// session establishment
     #[error("Invalid message during connection: {0:?}")]
-    InvalidConnectMessage(InMessage),
+    InvalidConnectMessage(Message),
+    /// Connection establishment failed for some other reason
+    #[error("Failed to establish DDP session: {0}")]
+    ConnectTimeout(&'static str),
 
+    /// Communication failed on the WebSocket level
     #[error("Error from Websocket: {0}")]
     Tungstenite(#[from] tokio_tungstenite::tungstenite::Error),
 
+    /// A value could not be encoded or decoded to/from JSON
     #[error("Failed to convert JSON: {0}")]
     JSON(#[from] serde_json::Error),
 
+    /// A message could not be written to an [MPSC channel](https://docs.rs/tokio/latest/tokio/sync/mpsc/index.html)
     #[error("Failed writing to MPSC channel: {0}")]
     MpscSend(#[from] tokio::sync::mpsc::error::SendError<String>),
+    /// Reading from a [oneshot channel](https://docs.rs/tokio/latest/tokio/sync/oneshot/index.html) failed
     #[error("Failed reading from oneshot channel: {0}")]
     OneshotRecv(#[from] tokio::sync::oneshot::error::RecvError),
 
+    /// The RPC succeeded, but the server responded with an error.
     #[error("Got an error response from an RPC: {0}")]
     Call(String),
+}
+
+/// Awaits the first `connected` or `failed` message on the stream
+async fn await_connect_response(stream: &mut Receiver<String>) -> Result<String, Error> {
+    for _ in 0..3 {
+        let msg = stream.recv().await.expect("response");
+
+        if let Ok(res) = serde_json::from_str::<Message>(&msg) {
+            return match res {
+                Message::Connected(Connected { session }) => Ok(session),
+                Message::Failed(Failed { version }) => Err(Error::IncompatibleVersion(version)),
+                _ => continue,
+            };
+        }
+    }
+
+    Err(Error::ConnectTimeout(
+        "Server did not send a connect or failed message",
+    ))
 }

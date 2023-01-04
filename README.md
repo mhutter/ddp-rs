@@ -10,39 +10,31 @@ Client Library for [Meteor.js](https://www.meteor.com/)' [DDP protocol](https://
 
 
 ```rust
-use env_logger::Env;
-use log::{error, info};
-use serde_json::json;
+let conn = ddp::connect("wss://open.rocket.chat/websocket").await?;
 
-#[tokio::main]
-async fn main() {
-    // enable log output. WARNING: `trace` will log all your messages in plain text, including any
-    // secrets
-    env_logger::init_from_env(Env::default().default_filter_or("ddp=trace"));
+let res = conn
+    .call(
+        "login",
+        Some(json!([{ "resume": "your-personal-access-token" }])),
+    )
+    .await?;
 
-    let conn = ddp::connect("wss://open.rocket.chat/websocket")
-        .await
-        .unwrap_or_else(|err| {
-            error!("Failed to establish connection: {err}");
-            std::process::exit(1);
-        });
-
-    let res = conn
-        .call(
-            "login",
-            Some(json!([{ "resume": "your-personal-access-token" }])),
-        )
-        .await
-        .unwrap_or_else(|err| {
-            error!("Failed to log in: {err}");
-            std::process::exit(1);
-        });
-
-    info!("Login response: {res:?}");
-}
+println!("Login response: {res:?}");
 ```
 
+
 ## Features
+
+* Server/Client handshake/connection establishment
+* Ping/Pong
+* RPC implementation
+* Automatic random ID generation
+* Logging via `log` crate
+
+For what's planned next, see "Project status" below.
+
+
+## Crate Features
 
 In order to support TLS connections, one of the following features must be enabled:
 
@@ -51,7 +43,7 @@ In order to support TLS connections, one of the following features must be enabl
 * `rustls-tls-native-roots`
 * `rustls-tls-webpki-roots`
 
-This will in turn enable the respective feature in the underlying [tungstenite](https://github.com/snapview/tungstenite-rs) crate.
+This will in turn enable the respective feature in the underlying [tungstenite](https://lib.rs/crates/tungstenite) crate.
 
 
 ## Project status
